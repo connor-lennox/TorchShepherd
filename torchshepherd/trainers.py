@@ -1,10 +1,8 @@
-from typing import Mapping, Callable, Type, List
+from typing import Callable, List
 
 import torch
-from torch import optim
 import torch.nn as nn
 from torch.optim import Optimizer
-from torch.types import Number
 from torch.utils.data import Dataset, DataLoader
 
 import train_utils
@@ -17,14 +15,15 @@ class Trainer:
     will train a model over a provided PyTorch dataset (additional training parameters also available).
     """
     def __init__(self, model_builder: Callable[[], nn.Module] = None, loss_func: Callable[[torch.Tensor,  torch.Tensor], torch.Tensor] = None,
-                    optim_builder: Callable[[nn.Module], Optimizer] = None, alt_forward: Callable[[nn.Module, torch.Tensor], torch.Tensor] = None,
-                    device: str = 'cpu') -> None:
+                 optim_builder: Callable[[nn.Module], Optimizer] = None, alt_forward: Callable[[nn.Module, torch.Tensor], torch.Tensor] = None,
+                 loader_builder: Callable[[Dataset], DataLoader] = None, device: str = 'cpu') -> None:
+
         self.model_builder: Callable[[], nn.Module] = model_builder
         self.loss_func: Callable[[torch.Tensor,  torch.Tensor], torch.Tensor] = loss_func
         self.optim_builder: Callable[[nn.Module], Optimizer] = optim_builder
         self.alt_forward: Callable[[nn.Module, torch.Tensor], torch.Tensor] = alt_forward
 
-        self.loader_builder: Callable[[Dataset], DataLoader] = None
+        self.loader_builder: Callable[[Dataset], DataLoader] = loader_builder
 
         self.device: str = device
 
@@ -41,6 +40,10 @@ class Trainer:
 
         return model
 
+    def test(self, model: nn.Module, data: Dataset, verbose: bool = False):
+        dataloader: DataLoader = self.loader_builder(data) if self.loader_builder is not None else DataLoader(data)
+        self._do_test(model, dataloader, verbose=verbose)
+
     def cross_validation_train(self, data: List[Dataset], epochs: int, verbose: bool = False) -> List[nn.Module]:
         """Performs cross validation training.
 
@@ -55,7 +58,8 @@ class Trainer:
             model: nn.Module = self.model_builder().to(self.device)
             optimizer: Optimizer = self.optim_builder(model)
 
-            dataloader: DataLoader = torch.utils.data.ChainDataset(data[:model_index] + data[model_index+1:])
+            comb_dataset: Dataset = torch.utils.data.ChainDataset(data[:model_index] + data[model_index+1:])
+            dataloader: DataLoader = self.loader_builder(comb_dataset) if self.loader_builder is not None else DataLoader(comb_dataset)
 
             self._do_train(model, optimizer, dataloader, epochs, verbose=verbose)
 
@@ -64,26 +68,61 @@ class Trainer:
         return models
 
     def _do_train(self, model: nn.Module, optimizer: Optimizer, dataloader: DataLoader, epochs: int, verbose: bool = False) -> None:
+        model.train()
+
         num_batches = len(dataloader)
         if verbose:
             print()
 
         for epoch in range(epochs):
             loss_sum = 0
-            for batch_idx, samples in enumerate(dataloader):
+            for batch_idx, (data, target) in enumerate(dataloader):
                 if verbose:
-                    print(f"\rEpoch {epoch}: {train_utils.progress_string(batch_idx, dataloader)}", end='')
-                
+                    print(f"\rEpoch {epoch+1}: {train_utils.progress_string(batch_idx, num_batches)}", end='')
+
+                # Zero optimizer gradient prior to training step
                 optimizer.zero_grad()
 
-                # Create output from the model and the xs of the sample, and calculate loss using ys of sample
-                output = self.alt_forward(model, samples[0]) if self.alt_forward is not None else model(samples)
-                loss = self.loss_func(output, samples[1])
+                # Move tensors to appropriate training device
+                data = data.to(self.device)
+                target = target.to(self.device)
 
+                # Create output from the model and the xs of the sample, and calculate loss using ys of sample
+                output = self.alt_forward(model, data) if self.alt_forward is not None else model(data)
+                loss = self.loss_func(output, target)
+
+                # Track total loss over epoch
                 loss_sum += loss.item()
 
+                # Perform optimization step
                 loss.backward()
                 optimizer.step()
             
             if verbose:
-                print(f"\rEpoch {epoch}: {loss_sum / num_batches}")
+                print(f"\rEpoch {epoch+1}: Loss={loss_sum / num_batches}")
+
+    def _do_test(self, model: nn.Module, dataloader: DataLoader, verbose: bool = False):
+        model.eval()
+
+        num_batches = len(dataloader)
+        if verbose:
+            print()
+
+        loss_sum = 0
+        for batch_idx, (data, target) in enumerate(dataloader):
+            if verbose:
+                print(f"\rTesting: {train_utils.progress_string(batch_idx, num_batches)}", end='')
+
+            # Move tensors to appropriate testing device
+            data = data.to(self.device)
+            target = target.to(self.device)
+
+            # Create output from the model and the xs of the sample, and calculate loss using ys of sample
+            output = self.alt_forward(model, data) if self.alt_forward is not None else model(data)
+            loss = self.loss_func(output, target)
+
+            # Track total loss over test
+            loss_sum += loss.item()
+
+        if verbose:
+            print(f"\rTesting: Loss={loss_sum / num_batches}")
