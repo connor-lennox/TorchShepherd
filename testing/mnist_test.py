@@ -37,8 +37,12 @@ train_data = datasets.MNIST('../data', train=True, download=True, transform=tran
 test_data = datasets.MNIST('../data', train=False, download=True, transform=transform)
 
 
-def construct_loader(dataset):
-    return DataLoader(dataset, pin_memory=False, batch_size=128, shuffle=True, num_workers=2)
+if DEVICE == 'cuda':
+    def construct_loader(dataset):
+        return DataLoader(dataset, pin_memory=False, batch_size=128, shuffle=True, num_workers=2)
+else:
+    def construct_loader(dataset):
+        return DataLoader(dataset, batch_size=128, shuffle=True)
 
 
 trainer = trainers.Trainer(model_builder=make_mnist_model, loss_func=F.nll_loss,
