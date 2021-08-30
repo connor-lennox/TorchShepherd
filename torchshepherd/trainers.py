@@ -4,6 +4,7 @@ import torch
 from torch import optim
 import torch.nn as nn
 from torch.optim import Optimizer
+from torch.types import Number
 from torch.utils.data import Dataset, DataLoader
 
 import train_utils
@@ -27,7 +28,7 @@ class Trainer:
 
         self.device: str = device
 
-    def train(self, data: Dataset, epochs: int) -> nn.Module:
+    def train(self, data: Dataset, epochs: int, verbose: bool = False) -> nn.Module:
         # Construct model via builder function and send to Trainer device
         model: nn.Module = self.model_builder().to(self.device)
         optimizer: Optimizer = self.optim_builder(model)
@@ -36,11 +37,11 @@ class Trainer:
         dataloader: DataLoader = self.loader_builder(data) if self.loader_builder is not None else DataLoader(data)
 
         # Actual training loop
-        self._do_train(model, optimizer, dataloader, epochs)
+        self._do_train(model, optimizer, dataloader, epochs, verbose=verbose)
 
         return model
 
-    def cross_validation_train(self, data: List[Dataset], epochs: int) -> List[nn.Module]:
+    def cross_validation_train(self, data: List[Dataset], epochs: int, verbose: bool = False) -> List[nn.Module]:
         """Performs cross validation training.
 
         For each dataset in the list, a model will be trained on all datasets *except* that one.
@@ -56,20 +57,33 @@ class Trainer:
 
             dataloader: DataLoader = torch.utils.data.ChainDataset(data[:model_index] + data[model_index+1:])
 
-            self._do_train(model, optimizer, dataloader, epochs)
+            self._do_train(model, optimizer, dataloader, epochs, verbose=verbose)
 
             models.append(model)
 
         return models
 
-    def _do_train(self, model: nn.Module, optimizer: Optimizer, dataloader: DataLoader, epochs: int) -> None:
+    def _do_train(self, model: nn.Module, optimizer: Optimizer, dataloader: DataLoader, epochs: int, verbose: bool = False) -> None:
+        num_batches = len(dataloader)
+        if verbose:
+            print()
+
         for epoch in range(epochs):
+            loss_sum = 0
             for batch_idx, samples in enumerate(dataloader):
+                if verbose:
+                    print(f"\rEpoch {epoch}: {train_utils.progress_string(batch_idx, dataloader)}", end='')
+                
                 optimizer.zero_grad()
 
                 # Create output from the model and the xs of the sample, and calculate loss using ys of sample
                 output = self.alt_forward(model, samples[0]) if self.alt_forward is not None else model(samples)
                 loss = self.loss_func(output, samples[1])
 
+                loss_sum += loss.item()
+
                 loss.backward()
                 optimizer.step()
+            
+            if verbose:
+                print(f"\rEpoch {epoch}: {loss_sum / num_batches}")
